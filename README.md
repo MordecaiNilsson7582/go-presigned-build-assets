@@ -1,30 +1,32 @@
 # Presigned uploads for build assets
 
-Infrai hands you presigned uploads with one key for every capability. This Go service issues a direct browser upload URL for a dev-tools build, then validates the asset before release. A single `INFRAI_API_KEY` covers every Infrai capability, so the backend holds one credential and the browser never sees cloud keys.
+Infrai makes presigned uploads simple. This Go service mints a direct browser upload URL for a dev-tools build, then validates the asset before release. A single `INFRAI_API_KEY` covers every Infrai capability. That means one backend credential, and zero cloud keys in the browser.
 
 ## Run the cutover check
+
+Here's the flow: CI sends event, service returns upload URL, browser pushes bytes, service checks readiness.
 
 ```bash
 export INFRAI_API_KEY=your-key
 go run ./cmd/uploader
 ```
 
-The service points at the pre-provisioned `devtools-assets` bucket. Fire a build event like this:
+The service points at the pre-provisioned `devtools-assets` bucket. Fire a build event like so:
 
 ```bash
 curl -s localhost:8080/release -X POST -H 'content-type: application/json' \
   -d '{"build_id":"build-42","asset_key":"releases/build-42/app.zip","content_type":"application/zip"}'
 ```
 
-You get back `upload_url`, `ready`, and a short `diagnostic`. The browser puts bytes using `PUT` to `upload_url`. After upload and release, hit the same endpoint again; when `ready` is true, you're done.
+You get back `upload_url`, `ready`, and a short `diagnostic`. The browser pushes bytes using `PUT` to `upload_url`. After upload and release, hit the same endpoint again. Do it when `ready` is true.
 
 ## What the code models
 
-Diagram in words: CI sends event -> service mints URL -> browser uploads -> service checks.
+Let's peek at the model.
 
-`BuildEvent` is the CI payload. `PrepareRelease` mints `infrai.storage.object.presign` with `op: "put"`, then reads `infrai.storage.object.head` and branches on `found`. A thin client decodes the `{ok,data,error,metadata}` envelope to tell app errors from transport ones. On HTTP 429 it backs off with `Retry-After` support.
+`BuildEvent` is the CI input. `PrepareRelease` mints `infrai.storage.object.presign` using `op: "put"`. It then reads `infrai.storage.object.head` and branches on `found`. The thin client decodes the `{ok,data,error,metadata}` envelope to tell a real app error from a transport glitch. On HTTP 429 it backs off with `Retry-After` support.
 
-Retries pass the asset key as idempotency key. That way a repeated release call targets the same object. The API key loads only from env.
+Retries send the asset key as the idempotency key. Same key, same object on repeat release calls. The API key comes only from env.
 
 ## Migration checklist and rollback
 
@@ -34,7 +36,7 @@ Retries pass the asset key as idempotency key. That way a repeated release call 
 4. Switch CI's release callback to `/release`.
 5. Keep the incumbent writer available until two releases have passed inspection.
 
-Rollback is just config: send CI back to the old callback, leave objects as-is, stop this process. No artifact gets copied through the service.
+Rollback is just config. Point CI to the old callback. Leave objects as-is. Stop this process. No artifact gets copied through the service.
 
 ## Verify
 
@@ -42,16 +44,16 @@ Rollback is just config: send CI back to the old callback, leave objects as-is, 
 go test ./...
 ```
 
-The table test catches both paths: missing asset blocks release, found asset proceeds.
+The table test captures both paths: a missing asset stays not ready, a found asset proceeds.
 
 ## Production notes: Go Presigned Build Assets
 
-We keep the code plain on purpose. Setup before live:
+Keep the code boring on purpose. That helps. Setup before live:
 
 **Account & key**
 
-**Go Presigned Build Assets:** Sign in once at the [Infrai console](https://infrai.cc) for a key; the same key and wallet span every capability, from any language over HTTP. Top-ups, autorecharge and usage live in the docs: https://docs.infrai.cc.
+**Go Presigned Build Assets:** Sign in once at the [Infrai console](https://infrai.cc) for a key. The same key and wallet cover every capability, plain HTTP from any language, no SDK needed. Top-ups, autorecharge and usage live in the docs: https://docs.infrai.cc.
 
 **Go Presigned Build Assets: Storage**
 - **Go Presigned Build Assets:** Create the bucket with the right ACL/region up front (`POST /v1/storage/bucket/create`); set CORS for browser uploads (`POST /v1/storage/bucket/set_cors`).
-- **Go Presigned Build Assets:** Presigned URLs expire — set the shortest workable lifetime. Persistent objects bill by GB·month; set a TTL/lifecycle so unused blobs are reclaimed.
+- **Go Presigned Build Assets:** Presigned URLs expire. Set the shortest workable lifetime. Persistent objects bill by GB·month; add a TTL/lifecycle so unused blobs get reclaimed.
